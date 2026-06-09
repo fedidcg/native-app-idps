@@ -1,8 +1,8 @@
-# FedCM for Android IdPs
+# Brokering FedCM via an on-device application
 
 # TL;DR;
 
-This document goes over an extension to FedCM to allow it to talk to Android Apps
+This document goes over an extension to FedCM to allow it to talk a local application as an intermediary to the Identity Provider (IdP).  Native application brokers are a class of native applications that run outside the scope of the web browser that can interact with and Identity Provider (IdP) to sign a user in.  This is useful in scenarios where a given application might be signed into an IdP and the in-browser web application wants to leverage this sign in state for browser scenarios.  It could also be used for web applications that want to leverage the sign in state of the operating system itself.
 
 # Context
 
@@ -21,17 +21,19 @@ A key aspect of the FedCM protocol is that there are two endpoints that are expo
 
 The first is an endpoint that, given a session cookie, returns all of the accounts that the user is logged in to, which the browser uses to build a mediated account chooser. The second is an endpoint that, given a session cookie and a specific account, which the browser uses to generate a cryptographic token that allows the user to login to the website.
 
-This works great on desktop, because, for the most part, the user is logged in to their identity providers on desktop in the browser (think, [google.com](http://google.com), [facebook.com](http://facebook.com), [twitter.com](http://twitter.com), [github.com](http://github.com), [microsoft.com](http://microsoft.com), [gmx.de](http://gmx.de), [web.de](http://web.de), etc), and so the user gets to reuse these accounts to login to other websites.
+This works well on desktop, because, for the most part, the user is logged in to their identity providers on desktop in the browser (think, [google.com](http://google.com), [facebook.com](http://facebook.com), [twitter.com](http://twitter.com), [github.com](http://github.com), [microsoft.com](http://microsoft.com), [gmx.de](http://gmx.de), [web.de](http://web.de), etc), and so the user gets to reuse these accounts to login to other websites.
 
-The problem is that this is less the case on Android (and mobile devices in general): users are largely logged in to the Android native applications (e.g. the facebook native app, the GMX native email app, etc) rather than their web counterparts (e.g. [facebook.com](http://facebook.com) or [gmx.de](http://gmx.de) website).
+The problem is that this is less the case on mobile devices, and some set of desktop devices: users are largely logged in to native applications (e.g. the facebook native app, the GMX native email app, a company managed Authenticator app, etc.) rather than their web counterparts (e.g. [facebook.com](http://facebook.com) or [gmx.de](http://gmx.de) website).
 
-For some  IdPs, a meaningful part of their users are not logged in to their Web Apps on mobile.
+For some IdPs, a meaningful part of their users are not seamlessly logged in to their Web Apps.
 
 # The Proposal
 
-The proposal being explored here is to introduce a new transport for FedCM, called FedCM-Over-Services, that the browser can use to talk to locally installed Android Apps as an alternative to HTTP, and vice versa (as a mechanism that the native app can use to talk to the browser).
+The proposal being explored here is to introduce a new transport for FedCM, called FedCM-Over-Services, that the browser can use to talk to locally installed Apps as an alternative to HTTP, and vice versa (as a mechanism that the native app can use to talk to the browser).
 
-In this proposal, the browser takes a FedCM request as it normally would, but now supports a new convention that allows a cooperating Android application to expose itself as a FedCM Identity Provider.
+In this proposal, the browser takes a FedCM request as it normally would, but now supports a new convention that allows a cooperating application to expose itself as a FedCM Identity Provider.
+
+## Android specifics -- needs to be updated to include, iOS, Mac, Windows, etc.
 
 The transport is based on Android’s Bound Services and is used for authenticated requests that FedCM needs to make, namely the accounts endpoint and the id assertion endpoint.
 
@@ -41,7 +43,9 @@ All of the other uncredentialed requests are made through HTTP.
 
 ## The Accounts and Id Assertion Endpoint
 
-The transport is used as a graceful fallback to the Android native application whenever the user is not logged in to the web app (in the unknown case, we first try to fetch with cookies and otherwise fallback to this new transport).
+The transport is used as a graceful fallback to the native application whenever the user is not logged in to the web app (in the unknown case, we first try to fetch with cookies and otherwise fallback to this new transport).
+
+For enterprise scenarios, policy can be set in the browser to specify which type of transport to attempt first, or possibly to mandate a specific transport.
 
 On the IdP side, the IdP is required to expose a Service (a) in their manifest file and (b) as a class that extends Service, and respond to requests for the accounts endpoint and the id assertion endpoint.
 
@@ -67,8 +71,9 @@ const credential = await navigator.credentials.get({
 
 The browser would go through its usual FedCM flow and at some point figure out that the user is not logged in to [idp.com](http://idp.com).
 
-If the browser is running on Android, it then tries to see if the user is logged in to the equivalent native application for [idp.com](http://idp.com).
+The browser can then try to see if the user is logged in to the equivalent native application for [idp.com](http://idp.com).
 
+### Android
 The browser starts by using Verified-App-Links to make the translation between [idp.com](http://idp.com) and the Android verified package name “com.idp.app” which rely on a bi-directional declaration in a well-known file: (e.g. [https://example.com/.well-known/assetlinks.json](https://example.com/.well-known/assetlinks.json)) and the Android app:
 
 [https://developer.android.com/training/app-links/verify-applinks](https://developer.android.com/training/app-links/verify-applinks) 
@@ -200,35 +205,51 @@ When the native IdP Android Application replies back to the browser, it can retu
 
 Ta-da.
 
+### iOS
+
+Needs definition.  This is doable on enterprise managed devices through some of the enterprise management services on the platform, a consumer focused implementation would need some investigation.
+
+### Mac
+
+Needs definition. We do this today with Edge and Chrome plugins to tunnel into a native broker.
+
+### Windows
+
+Needs definition. We do this today with Edge and Chrome plugins to tunnel into a native broker.
+
 ## The Login Status API
 
 The browser exposes itself as a Bound Service that conforms to a certain convention that accepts “SetLogin” requests from native IdPs.
 
-So, ahead of time, the browser expects that the Android native app would tell the browser when their users are logging in and out of their native apps.
+So, ahead of time, the browser expects that the Android native app would tell the browser when their users are logging in and out of their native apps.  
+
+> Is this needed?  The browser can just poll the native component as needed, this is just an on-box RPC call so it shouldn't have any major perf impacts.
 
 ## WebViews
 
 We currently have FedCM disabled in WebViews, and I think that, with this mechanism, we would be able to enable it.
 
-Because FedCM, running in the WebView’s process space, talks the Android native app directly to gather the users account, and has the ability to then use the continuation API in its own address space, we would enable federation to work on WebViews with the following properties:
+Because FedCM, running in the WebView’s process space can leverage the native application state directly to gather the users account, and has the ability to then use the continuation API in its own address space, we would enable federation to work on WebViews with the following properties:
 
 - The user isn’t required to login (or to be logged in) to the IdP in the calling App’s process space (e.g. in the WebView’s cookie jar)  
 - The IdP shares with the calling App’s process space an JWT / access token, which is narrowly scoped to the specific app, allowing the user to login to the App with the IdP  
 - The IdP shares with the calling App’s process space enough information to construct an account chooser (namely, the user’s name/email/picture)
 
-Because FedCM is already distributed with JS SDK across without requiring websites (and apps) to change, this can be deployed at scale to all android native apps using webviews.
+Because FedCM is already distributed with JS SDK across without requiring websites (and apps) to change, this can be deployed at scale to all apps using webviews.
 
 # Security Considerations
 
 ## App Origin Authentication
 
-One of the most important security considerations is how to find and authenticate the right Android App, given a URL.
+One of the most important security considerations is how to find and authenticate the right application, given a URL.
 
 On the Web, every FedCM request relies on HTTP/DNS/TLS to authenticate the right server. Android Apps, on the other hand, don’t have the same naming system.
 
 How does the browser, then, figure out which Android native app to talk to?
 
 How do we guarantee that the Android native app is owned by the same entity as the FedCM IdP origin?
+
+> Entra leverages things like the reply URL, or application configuration to allow for native brokering to occur.
 
 ### Background
 
@@ -269,6 +290,8 @@ If only statement (b) was made, without a corresponding (a) from the origin, any
 When both (a) and (b) are used in conjunction, Android is able to verify that a specific app’s intent filter is responsible for handling a specific set of URLs.
 
 This is used on a variety of things, but most notably on deep-linking: if an android user using an email client app clicks on [https://www.example.com/products/1234.html](https://www.example.com/products/1234.html), the user is directed to “com.example.app” rather than the default browser.
+
+###
 
 ### Proposal
 
