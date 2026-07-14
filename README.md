@@ -221,6 +221,40 @@ Needs definition. We do this today with Edge and Chrome plugins to tunnel into a
 
 The browser exposes itself as a Bound Service that conforms to a certain convention that accepts “SetLogin” requests from native IdPs.
 
+```xml
+<service
+  android:name=".LoginStatusService"
+  android:exported="true">
+  <intent-filter>
+    <action android:name="org.w3.FedCM.LOGIN_STATUS" />
+  </intent-filter>
+</service>
+```
+
+And the corresponding browser implementation:
+
+```java
+/** Android Bound Service accepting login status updates from external native IdP applications. */
+@NullMarked
+public class LoginStatusService extends Service {
+    private static final String TAG = "LoginStatusSvc";
+
+    public static class LoginStatusBinder extends Binder {
+        public boolean setLoginStatus(String status, String origin) {
+            // ... writes to browser storage ...
+            return true;
+        }
+    }
+
+    private final IBinder mBinder = new LoginStatusBinder();
+
+    @Override
+    public @Nullable IBinder onBind(Intent intent) {
+        return mBinder;
+    }
+}
+```
+
 So, ahead of time, the browser expects that the Android native app would tell the browser when their users are logging in and out of their native apps.  
 
 > Is this needed?  The browser can just poll the native component as needed, this is just an on-box RPC call so it shouldn't have any major perf impacts.
