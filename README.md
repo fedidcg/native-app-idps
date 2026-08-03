@@ -33,15 +33,21 @@ The proposal being explored here is to introduce a new transport for FedCM, call
 
 In this proposal, the browser takes a FedCM request as it normally would, but now supports a new convention that allows a cooperating application to expose itself as a FedCM Identity Provider.
 
-## Android specifics -- needs to be updated to include, iOS, Mac, Windows, etc.
+Each native platform works differently, so each requires integration with native apps differently:
 
-The transport is based on Android’s Bound Services using the standard Messenger and Bundle messaging protocol (with request/reply message codes and JSON string payloads). It is used for authenticated requests that FedCM needs to make, namely the accounts endpoint and the id assertion endpoint.
+- [Android](#Android)
+- iOS
+- Windows
+- MacOS
+- Linux
+
+## Android
+
+The transport on Android is based on Bound Services using the standard Messenger and Bundle messaging protocol (with request/reply message codes and JSON string payloads). It is used for authenticated requests that FedCM needs to make, namely the accounts endpoint and the id assertion endpoint.
 
 It also works to let the IdP’s native app talk to the browser, for example for the Login Status API. 
 
 All of the other uncredentialed requests are made through HTTP.
-
-## The Accounts and Id Assertion Endpoint
 
 The transport is used as a graceful fallback to the native application whenever the user is not logged in to the web app (in the unknown case, we first try to fetch with cookies and otherwise fallback to this new transport).
 
@@ -73,12 +79,53 @@ The browser would go through its usual FedCM flow and at some point figure out t
 
 The browser can then try to see if the user is logged in to the equivalent native application for [idp.com](http://idp.com).
 
-### Android
+### Origin Verification
+
 The browser starts by using Verified-App-Links to make the translation between [idp.com](http://idp.com) and the Android verified package name “com.idp.app” which rely on a bi-directional declaration in a well-known file: (e.g. [https://example.com/.well-known/assetlinks.json](https://example.com/.well-known/assetlinks.json)) and the Android app:
 
 [https://developer.android.com/training/app-links/verify-applinks](https://developer.android.com/training/app-links/verify-applinks) 
 
-(See the security section for more information)
+This is a long and intricate system, but at its core, it relies on a bidirectional statement to bind an origin to an app: (a) the https origin needs to point to the app and (b) the app needs to point to the https origin.
+
+The way the first statement (a) is made is with [Digital Asset Links](https://developers.google.com/digital-asset-links/v1/getting-started): a well-known file (e.g. https://www.example.com/.well-known/assetlinks.json) that is hosted in an origin that describes what apps can handle what urls.
+
+For example, the following .well-known file states that, for “[https://www.example.com](https://www.example.com)” the "com.example.app” android package name (with a given sha256\_cert\_fingerprints), can handle a well defined relationship, "delegate\_permission/common.handle\_all\_urls":
+
+```json
+[{
+  "relation": ["delegate_permission/common.use_as_origin"],
+  "target" : { "namespace": "android_app", "package_name": "com.example.app",
+               "sha256_cert_fingerprints": ["hash_of_app_certificate"] }
+}]
+```
+
+The second statement (b) is made in the AndroidManifest.xml file that is shipped with every Android App.
+
+For example, the following snippet in and AndroidManifest.xml file states that “com.example.app” can handle “[https://www.example.com/products](https://www.example.com/products)\*” urls:
+
+```xml
+<intent-filter android:autoVerify="true">
+  <action android:name="android.intent.action.VIEW" />               
+  <category android:name="android.intent.category.DEFAULT" />
+  <category android:name="android.intent.category.BROWSABLE" />
+  <data
+    android:scheme="https"
+    android:host="www.example.com"
+    android:pathPrefix="/products" />
+</intent-filter>
+```
+
+If only statement (b) was made, without a corresponding (a) from the origin, any malicious app would be able to intercept and handle urls from other apps (e.g. “my.malicoius.app” could intercept “[https://facebook.com](https://facebook.com)” urls). If only statement (a) was made, without a corresponding (b) statement, any malicious origin could drive traffic to any app (e.g. “[https://malicious.com](https://malicious.com)” could make every link clicked on Android go to the wrong app).
+
+When both (a) and (b) are used in conjunction, Android is able to verify that a specific app’s intent filter is responsible for handling a specific set of URLs.
+
+This is used on a variety of things, but most notably on deep-linking: if an android user using an email client app clicks on [https://www.example.com/products/1234.html](https://www.example.com/products/1234.html), the user is directed to “com.example.app” rather than the default browser.
+
+So, for example, the FedCM IdP would need to have the following declarations: the DAL links in their origin, the \<intent-filter\> in their AndroidManifest file and the definition of the service.
+
+When those three conditions are met, the browser is able to connect to a service in an Android App that is guaranteed to represent the origin.
+
+### The Accounts and Id Assertion Endpoint
 
 Once the browser knows what the package name is, it uses the agreed-upon ahead of time convention of FedCM-Over-Services.
 
@@ -208,21 +255,52 @@ public class HelloService extends Service {
 
 When the native IdP Android Application replies back to the browser, it can return credentialed requests like the accounts endpoint and the id assertion endpoint, using its own internal storage to authenticate to its backend services.
 
-Ta-da.
+### Continuation API
 
-### iOS
+When an IdP requires multi-step authentication or explicit user interaction (such as accepting terms of service or selecting a profile), the IdP can return a `continue_on` URL during a FedCM account or token request. 
 
-Needs definition.  This is doable on enterprise managed devices through some of the enterprise management services on the platform, a consumer focused implementation would need some investigation.
+Instead of opening a browser tab or Custom Tab, FedCM can dispatch the continuation flow directly to the IdP's installed Android application.
 
-### Mac
+#### Intent Resolution & MIME Type
+When the browser encounters a `continue_on` URL, it queries `PackageManager` for an activity that can handle:
+* **Action**: `Intent.ACTION_VIEW`
+* **Category**: `Intent.CATEGORY_BROWSABLE`
+* **Data URI**: Matching the `continue_on` URL
+* **MIME Type**: `application/web-identity+json`
 
-Needs definition. We do this today with Edge and Chrome plugins to tunnel into a native broker.
+If a matching app is installed and verified via Digital Asset Links (`delegate_permission/common.use_as_origin`), the browser launches the activity directly.
 
-### Windows
+#### AndroidManifest.xml Example
+```xml
+<activity
+    android:name=".FedCmContinuationActivity"
+    android:exported="true">
+    <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https"
+              android:host="idp.example"
+              android:pathPrefix="/continue" />
+        <data android:mimeType="application/web-identity+json" />
+    </intent-filter>
+</activity>
+```
 
-Needs definition. We do this today with Edge and Chrome plugins to tunnel into a native broker.
+#### Native Equivalent of `IdentityProvider.resolve()`
+When the user completes the authentication flow inside the native IdP activity, the app returns the resulting ID assertion token back to the browser via `Activity.setResult()`:
 
-## The Login Status API
+```java
+// Inside FedCmContinuationActivity after successful user sign-in
+Intent resultIntent = new Intent();
+resultIntent.putExtra("token", idAssertionToken);
+setResult(Activity.RESULT_OK, resultIntent);
+finish();
+```
+
+The browser receives `Activity.RESULT_OK` and extracts the `"token"` string extra. This acts as the native equivalent of `IdentityProvider.resolve(token)`, immediately resolving the pending `navigator.credentials.get()` promise in the relying party's web page.
+
+### The Login Status API
 
 The browser exposes itself as a Bound Service that conforms to a certain convention that accepts “SetLogin” requests from native IdPs.
 
@@ -264,50 +342,17 @@ So, ahead of time, the browser expects that the Android native app would tell th
 
 In Chromium's implementation, `LoginStatusService` is implemented as an exported Bound Service that accepts login status updates from native IdP applications.
 
-## Continuation API via Native Applications
+## iOS
 
-When an IdP requires multi-step authentication or explicit user interaction (such as accepting terms of service or selecting a profile), the IdP can return a `continue_on` URL during a FedCM account or token request. 
+Needs definition.  This is doable on enterprise managed devices through some of the enterprise management services on the platform, a consumer focused implementation would need some investigation.
 
-Instead of opening a browser tab or Custom Tab, FedCM can dispatch the continuation flow directly to the IdP's installed Android application.
+## Mac
 
-### 1. Intent Resolution & MIME Type
-When the browser encounters a `continue_on` URL, it queries `PackageManager` for an activity that can handle:
-* **Action**: `Intent.ACTION_VIEW`
-* **Category**: `Intent.CATEGORY_BROWSABLE`
-* **Data URI**: Matching the `continue_on` URL
-* **MIME Type**: `application/web-identity+json`
+Needs definition. We do this today with Edge and Chrome plugins to tunnel into a native broker.
 
-If a matching app is installed and verified via Digital Asset Links (`delegate_permission/common.use_as_origin`), the browser launches the activity directly.
+## Windows
 
-### 2. AndroidManifest.xml Example
-```xml
-<activity
-    android:name=".FedCmContinuationActivity"
-    android:exported="true">
-    <intent-filter android:autoVerify="true">
-        <action android:name="android.intent.action.VIEW" />
-        <category android:name="android.intent.category.DEFAULT" />
-        <category android:name="android.intent.category.BROWSABLE" />
-        <data android:scheme="https"
-              android:host="idp.example"
-              android:pathPrefix="/continue" />
-        <data android:mimeType="application/web-identity+json" />
-    </intent-filter>
-</activity>
-```
-
-### 3. Native Equivalent of `IdentityProvider.resolve()`
-When the user completes the authentication flow inside the native IdP activity, the app returns the resulting ID assertion token back to the browser via `Activity.setResult()`:
-
-```java
-// Inside FedCmContinuationActivity after successful user sign-in
-Intent resultIntent = new Intent();
-resultIntent.putExtra("token", idAssertionToken);
-setResult(Activity.RESULT_OK, resultIntent);
-finish();
-```
-
-The browser receives `Activity.RESULT_OK` and extracts the `"token"` string extra. This acts as the native equivalent of `IdentityProvider.resolve(token)`, immediately resolving the pending `navigator.credentials.get()` promise in the relying party's web page.
+Needs definition. We do this today with Edge and Chrome plugins to tunnel into a native broker.
 
 ## Relationship with Native App Payment Handlers
 
@@ -348,70 +393,6 @@ Because FedCM, running in the WebView’s process space can leverage the native 
 Because FedCM is already distributed with JS SDK across without requiring websites (and apps) to change, this can be deployed at scale to all apps using webviews.
 
 # Security Considerations
-
-## App Origin Authentication
-
-One of the most important security considerations is how to find and authenticate the right application, given a URL.
-
-On the Web, every FedCM request relies on HTTP/DNS/TLS to authenticate the right server. Android Apps, on the other hand, don’t have the same naming system.
-
-How does the browser, then, figure out which Android native app to talk to?
-
-How do we guarantee that the Android native app is owned by the same entity as the FedCM IdP origin?
-
-> Entra leverages things like the reply URL, or application configuration to allow for native brokering to occur.
-
-### Background
-
-So, while Android doesn’t have a native naming system, what they do have, however, which we argue here is sufficient, is a good and reliable bi-directional mapping between URLs and Android Package names, via [Digital Asset Links](https://developers.google.com/digital-asset-links/v1/getting-started) and [Android’s Verification System](https://developer.android.com/training/app-links/verify-applinks).
-
-This is a long and intricate system, but at its core, it relies on a bidirectional statement to bind an origin to an app: (a) the https origin needs to point to the app and (b) the app needs to point to the https origin.
-
-The way the first statement (a) is made is with [Digital Asset Links](https://developers.google.com/digital-asset-links/v1/getting-started): a well-known file (e.g. https://www.example.com/.well-known/assetlinks.json) that is hosted in an origin that describes what apps can handle what urls.
-
-For example, the following .well-known file states that, for “[https://www.example.com](https://www.example.com)” the "com.example.app” android package name (with a given sha256\_cert\_fingerprints), can handle a well defined relationship, "delegate\_permission/common.handle\_all\_urls":
-
-```json
-[{
-  "relation": ["delegate_permission/common.use_as_origin"],
-  "target" : { "namespace": "android_app", "package_name": "com.example.app",
-               "sha256_cert_fingerprints": ["hash_of_app_certificate"] }
-}]
-```
-
-The second statement (b) is made in the AndroidManifest.xml file that is shipped with every Android App.
-
-For example, the following snippet in and AndroidManifest.xml file states that “com.example.app” can handle “[https://www.example.com/products](https://www.example.com/products)\*” urls:
-
-```xml
-<intent-filter android:autoVerify="true">
-  <action android:name="android.intent.action.VIEW" />               
-  <category android:name="android.intent.category.DEFAULT" />
-  <category android:name="android.intent.category.BROWSABLE" />
-  <data
-    android:scheme="https"
-    android:host="www.example.com"
-    android:pathPrefix="/products" />
-</intent-filter>
-```
-
-If only statement (b) was made, without a corresponding (a) from the origin, any malicious app would be able to intercept and handle urls from other apps (e.g. “my.malicoius.app” could intercept “[https://facebook.com](https://facebook.com)” urls). If only statement (a) was made, without a corresponding (b) statement, any malicious origin could drive traffic to any app (e.g. “[https://malicious.com](https://malicious.com)” could make every link clicked on Android go to the wrong app).
-
-When both (a) and (b) are used in conjunction, Android is able to verify that a specific app’s intent filter is responsible for handling a specific set of URLs.
-
-This is used on a variety of things, but most notably on deep-linking: if an android user using an email client app clicks on [https://www.example.com/products/1234.html](https://www.example.com/products/1234.html), the user is directed to “com.example.app” rather than the default browser.
-
-###
-
-### Proposal
-
-We propose to reuse this trust signal for FedCM bound services: we are going to require that the app has already set up verified links for the FedCM endpoints before we call into it.
-
-So, for example, the FedCM IdP would need to have the following declarations: the DAL links in their origin, the \<intent-filter\> in their AndroidManifest file and the definition of the service.
-
-When those three conditions are met, the browser is able to connect to a service in an Android App that is guaranteed to represent the origin.
-
-In Chrome’s implementation, we’ll re-use the ChromeOriginVerifier for [AuthTab](https://source.chromium.org/chromium/chromium/src/+/main:chrome/android/java/src/org/chromium/chrome/browser/browserservices/ui/controller/AuthTabVerifier.java;drc=62a9a00176f862e688fa47919ed6f19b59f77b5f;l=122) and DomainVerificationManager for Android S and above.
 
 # Privacy Considerations
 
