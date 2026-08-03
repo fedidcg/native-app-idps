@@ -35,7 +35,7 @@ In this proposal, the browser takes a FedCM request as it normally would, but no
 
 ## Android specifics -- needs to be updated to include, iOS, Mac, Windows, etc.
 
-The transport is based on Android’s Bound Services and is used for authenticated requests that FedCM needs to make, namely the accounts endpoint and the id assertion endpoint.
+The transport is based on Android’s Bound Services using the standard Messenger and Bundle messaging protocol (with request/reply message codes and JSON string payloads). It is used for authenticated requests that FedCM needs to make, namely the accounts endpoint and the id assertion endpoint.
 
 It also works to let the IdP’s native app talk to the browser, for example for the Login Status API. 
 
@@ -121,6 +121,9 @@ Then, at run time, creates an intent to the specific application it wants to tal
         public void onServiceConnected(ComponentName name, IBinder service) {
             Messenger serviceMessenger = new Messenger(service);
             Message msg = Message.obtain(null, 1, 0, 0);
+            Bundle requestBundle = new Bundle();
+            requestBundle.putString("request", "{"accounts_url":"https://idp.example/fedcm/accounts"}");
+            msg.setData(requestBundle);
 
             msg.replyTo = new Messenger(new Handler(Looper.getMainLooper()) {
               @Override
@@ -178,9 +181,11 @@ public class HelloService extends Service {
 
             if (msg.what == 1) {
                 Messenger replyTo = msg.replyTo;
+                String requestJson = msg.getData().getString("request");
+                String replyJson = "{"accounts":[{"id":"1234","name":"Alice","email":"alice@idp.example"}]}";
                 Message replyMsg = Message.obtain(null, 2);
                 Bundle bundle = new Bundle();
-                bundle.putString("reply", "world");
+                bundle.putString("reply", replyJson);
                 replyMsg.setData(bundle);
                 try {
                     replyTo.send(replyMsg);
@@ -257,7 +262,78 @@ public class LoginStatusService extends Service {
 
 So, ahead of time, the browser expects that the Android native app would tell the browser when their users are logging in and out of their native apps.  
 
-> Is this needed?  The browser can just poll the native component as needed, this is just an on-box RPC call so it shouldn't have any major perf impacts.
+In Chromium's implementation, `LoginStatusService` is implemented as an exported Bound Service that accepts login status updates from native IdP applications.
+
+## Continuation API via Native Applications
+
+When an IdP requires multi-step authentication or explicit user interaction (such as accepting terms of service or selecting a profile), the IdP can return a `continue_on` URL during a FedCM account or token request. 
+
+Instead of opening a browser tab or Custom Tab, FedCM can dispatch the continuation flow directly to the IdP's installed Android application.
+
+### 1. Intent Resolution & MIME Type
+When the browser encounters a `continue_on` URL, it queries `PackageManager` for an activity that can handle:
+* **Action**: `Intent.ACTION_VIEW`
+* **Category**: `Intent.CATEGORY_BROWSABLE`
+* **Data URI**: Matching the `continue_on` URL
+* **MIME Type**: `application/web-identity+json`
+
+If a matching app is installed and verified via Digital Asset Links (`delegate_permission/common.use_as_origin`), the browser launches the activity directly.
+
+### 2. AndroidManifest.xml Example
+```xml
+<activity
+    android:name=".FedCmContinuationActivity"
+    android:exported="true">
+    <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https"
+              android:host="idp.example"
+              android:pathPrefix="/continue" />
+        <data android:mimeType="application/web-identity+json" />
+    </intent-filter>
+</activity>
+```
+
+### 3. Native Equivalent of `IdentityProvider.resolve()`
+When the user completes the authentication flow inside the native IdP activity, the app returns the resulting ID assertion token back to the browser via `Activity.setResult()`:
+
+```java
+// Inside FedCmContinuationActivity after successful user sign-in
+Intent resultIntent = new Intent();
+resultIntent.putExtra("token", idAssertionToken);
+setResult(Activity.RESULT_OK, resultIntent);
+finish();
+```
+
+The browser receives `Activity.RESULT_OK` and extracts the `"token"` string extra. This acts as the native equivalent of `IdentityProvider.resolve(token)`, immediately resolving the pending `navigator.credentials.get()` promise in the relying party's web page.
+
+## Relationship with Native App Payment Handlers
+
+FedCM Native App IDPs build upon the architectural precedence established by [Android Native Payment Handlers](https://www.stephenmcgruer.com/native-app-payment-handler/android-apps.html) (used by the Web `PaymentRequest` API). Both mechanisms solve a fundamental challenge: **allowing a Web API in the browser to discover, verify, and delegate credential or transaction workflows to an installed native Android application representing a web origin.**
+
+### Shared Architectural Patterns
+1. **Zero-Configuration Relying Parties**: Relying parties call standard Web APIs (`navigator.credentials.get()` or `new PaymentRequest()`) with HTTPS config URLs. The browser transparently detects whether an installed Android application can fulfill the request without relying party code changes.
+2. **Bi-Directional Origin Verification**: Both systems require two-way cryptographic verification before invoking an app:
+   * The web origin must declare the Android application's package name and certificate fingerprint in `.well-known/assetlinks.json`.
+   * The Android application must declare support for the origin in its `AndroidManifest.xml`.
+3. **Activity Result Protocol**: When launching interactive UX (such as a payment sheet or continuation sign-in screen), both APIs use Android Activity results (`Activity.setResult(Activity.RESULT_OK, resultIntent)`) to return cryptographic tokens or responses back to the browser tab.
+
+### Intentional Architectural Simplifications in FedCM
+While Payment Handlers established the foundation, FedCM Native App IDPs introduce several intentional simplifications:
+
+* **Origin Verification (DAL)**: Payment Handlers require both Digital Asset Links (`handle_all_urls`) **and** an HTTP-fetched Payment Method Manifest (`payment-manifest.json`). FedCM requires only Digital Asset Links (`delegate_permission/common.use_as_origin`), eliminating extra network requests since `use_as_origin` is already widely deployed by Identity Providers for AuthTab and Custom Tabs.
+* **App Discovery & Filtering**: Payment Handlers use `<meta-data>` tags (`default_payment_method_name` or `@array`) in `AndroidManifest.xml` to filter candidates before verification. FedCM queries all services declaring `org.w3.FedCM` and relies strictly on DAL verification (`delegate_permission/common.use_as_origin`) to filter authorized apps, keeping manifest declarations minimal.
+* **IPC Mechanism**: Payment Handlers use formal AIDL interfaces (`IsReadyToPayService.aidl`) and typed Android Parcelables. FedCM uses Android `Messenger` and `Bundle` with JSON strings (`request` / `reply`), providing a lightweight protocol that avoids AIDL version-skew across independent IdP app updates while reusing FedCM's standardized JSON schemas.
+
+### References and Further Reading
+* [Android Payment Apps Developer Guide (`web.dev`)](https://web.dev/articles/android-payment-apps-developers-guide?hl=en)
+* [Native App Payment Handler Specification (Stephen McGruer)](https://www.stephenmcgruer.com/native-app-payment-handler/spec.html)
+* [Android Native App Payment Handlers Guide (Stephen McGruer)](https://www.stephenmcgruer.com/native-app-payment-handler/android-apps.html)
+* [Android Payment Apps Origin Delegation (`web.dev`)](https://web.dev/articles/android-payment-apps-delegation)
+* [Intent to Ship: PaymentRequest on WebView (`blink-dev`)](https://groups.google.com/u/1/a/chromium.org/g/blink-dev/c/1Ep8DvUHU1Q/m/nvB3DSk1BgAJ)
+* [Intent to Ship: Android Payment Apps (`blink-dev`)](https://groups.google.com/u/0/a/chromium.org/g/blink-dev/c/GR-MdDaKCoA/m/YOcIo6mUBgAJ)
 
 ## WebViews
 
@@ -297,7 +373,7 @@ For example, the following .well-known file states that, for “[https://www.exa
 
 ```json
 [{
-  "relation": ["delegate_permission/common.handle_all_urls"],
+  "relation": ["delegate_permission/common.use_as_origin"],
   "target" : { "namespace": "android_app", "package_name": "com.example.app",
                "sha256_cert_fingerprints": ["hash_of_app_certificate"] }
 }]
@@ -345,4 +421,4 @@ We don’t think there are any privacy considerations that go beyond what has al
 
 1) Can background services make external HTTP requests?  
    1) Yes, just out of the main thread, so need an Executor  
-2) How should we handle re-authentication like fingerprint checks? Should that be done at the id assertion endpoint but not at the accounts endpoint? Should that be a continuation api response?  
+  
