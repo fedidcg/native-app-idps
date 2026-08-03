@@ -129,18 +129,27 @@ When those three conditions are met, the browser is able to connect to a service
 
 Once the browser knows what the package name is, it uses the agreed-upon ahead of time convention of FedCM-Over-Services.
 
-First, at compilation time, the browser declares that it will query all apps that have exposed the “org.w3.FedCM” intent signature:
+First, at compilation time, the browser declares that it will query all apps that expose the `org.w3.FedCM` intent signature (for bound services) and `application/web-identity+json` (for continuation flows). By declaring these in `<queries>`, any browser can discover FedCM native apps without requiring the broad `QUERY_ALL_PACKAGES` permission:
 
 See for more information: [https://developer.android.com/training/package-visibility/declaring](https://developer.android.com/training/package-visibility/declaring) 
 
 ```xml
 <!--
-  NOTE: this isn't necessary for Clank specifically, because it already has a
-  QUERY_ALL_PACKAGES permission (which is a superset of this declaration).
+  Declaring these intents inside <queries> allows Android 11+ browsers to
+  discover FedCM services and continuation activities with least-privilege package
+  visibility, avoiding the need for the QUERY_ALL_PACKAGES permission.
 -->
 <queries>
+  <!-- Discover Bound Services for Accounts and ID Assertion endpoints -->
   <intent>
     <action android:name="org.w3.FedCM" />
+  </intent>
+
+  <!-- Discover Continuation API Activities for multi-step sign-in -->
+  <intent>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:mimeType="application/web-identity+json" />
   </intent>
 </queries>
 ```
