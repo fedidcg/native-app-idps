@@ -2,7 +2,7 @@
 
 # TL;DR;
 
-This document goes over an extension to FedCM to allow it to talk a local application as an intermediary to the Identity Provider (IdP).  Native application brokers are a class of native applications that run outside the scope of the web browser that can interact with and Identity Provider (IdP) to sign a user in.  This is useful in scenarios where a given application might be signed into an IdP and the in-browser web application wants to leverage this sign in state for browser scenarios.  It could also be used for web applications that want to leverage the sign in state of the operating system itself.
+This document goes over an extension to FedCM to allow it to talk to a local application as an intermediary to the Identity Provider (IdP).  Native application brokers are a class of native applications that run outside the scope of the web browser and can interact with an Identity Provider (IdP) to sign a user in.  This is useful in scenarios where a given application might be signed into an IdP and the in-browser web application wants to leverage this sign in state for browser scenarios.  It could also be used for web applications that want to leverage the sign in state of the operating system itself.
 
 # Context
 
@@ -12,8 +12,8 @@ It does so by introducing a protocol that a cooperating relying party (a website
 
 More details about FedCM here:
 
-[https://privacysandbox.google.com/cookies/fedcm](https://privacysandbox.google.com/cookies/fedcm)  
-[https://developer.mozilla.org/en-US/docs/Web/API/FedCM\_API](https://developer.mozilla.org/en-US/docs/Web/API/FedCM_API) 
+* [https://privacysandbox.google.com/cookies/fedcm](https://privacysandbox.google.com/cookies/fedcm)  
+* [https://developer.mozilla.org/en-US/docs/Web/API/FedCM\_API](https://developer.mozilla.org/en-US/docs/Web/API/FedCM_API) 
 
 # The Problem
 
@@ -21,9 +21,9 @@ A key aspect of the FedCM protocol is that there are two endpoints that are expo
 
 The first is an endpoint that, given a session cookie, returns all of the accounts that the user is logged in to, which the browser uses to build a mediated account chooser. The second is an endpoint that, given a session cookie and a specific account, which the browser uses to generate a cryptographic token that allows the user to login to the website.
 
-This works well on desktop, because, for the most part, the user is logged in to their identity providers on desktop in the browser (think, [google.com](http://google.com), [facebook.com](http://facebook.com), [twitter.com](http://twitter.com), [github.com](http://github.com), [microsoft.com](http://microsoft.com), [gmx.de](http://gmx.de), [web.de](http://web.de), etc), and so the user gets to reuse these accounts to login to other websites.
+This often works well on desktop, because, for the most part, the user is logged in to their identity providers on desktop in the browser (think, [google.com](http://google.com), [facebook.com](http://facebook.com), [twitter.com](http://twitter.com), [github.com](http://github.com), [microsoft.com](http://microsoft.com), [gmx.de](http://gmx.de), [web.de](http://web.de), etc), and so the user gets to reuse these accounts to login to other websites.
 
-The problem is that this is less the case on mobile devices, and some set of desktop devices: users are largely logged in to native applications (e.g. the facebook native app, the GMX native email app, a company managed Authenticator app, etc.) rather than their web counterparts (e.g. [facebook.com](http://facebook.com) or [gmx.de](http://gmx.de) website).
+The problem is that this is not universal on the desktop and is far less the case on mobile devices: In those cases, users are largely logged in to native applications (e.g. the facebook native app, the GMX native email app, a company managed Authenticator app, etc.) rather than their web counterparts (e.g. [facebook.com](http://facebook.com) or [gmx.de](http://gmx.de) website).
 
 For some IdPs, a meaningful part of their users are not seamlessly logged in to their Web Apps.
 
